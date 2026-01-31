@@ -513,7 +513,7 @@ class SDWorker(QThread):
         self.last_sd_prompt = last_sd_prompt
         
         # Create httpx client for SD server
-        sd_server_url = "http://192.168.1.158:8080/v1"
+        sd_server_url = "http://192.168.1.152:8080/v1"
         http_client = httpx.Client(
             base_url=sd_server_url,
             timeout=30.0

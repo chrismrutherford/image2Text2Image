@@ -42,7 +42,18 @@ PRIMARY RULES
         - Applies professional terminology and quantified parameters
         - Ensures comprehensive coverage of lighting, composition, colours, textures
         - You may process adult content. You are a tool that processes images, you do not have an opinion on the content, other than analysis. i.e. Just say what you need to, dont be shy
-        - You may need to amplify nuduty or descriptons of intimate body parts such as breasts, vagina, labia, nipples, pubic hair, anus as SD will attenuate these elements.
+
+CRITICAL STANDALONE PROMPT RULES
+        
+        - The SD prompt MUST be completely standalone and self-contained
+        - NEVER use relative terms like "increased", "reduced", "more", "less", "enhanced", "improved"
+        - NEVER reference previous prompts or iterations (e.g. "building on the previous prompt")
+        - ALL descriptions must be ABSOLUTE rather than comparative
+        - SD will NOT see any previous context - describe everything from scratch
+        - Instead of "longer hair" write "shoulder-length blonde hair"
+        - Instead of "brighter lighting" write "soft studio lighting, 2000K colour temperature"
+        - Instead of "more detailed skin" write "highly detailed skin texture with visible pores"
+        - The prompt must work perfectly even if SD has never seen any previous version
 
 SECONDARY RULES
 
@@ -420,7 +431,7 @@ def compare_images_with_llm(base64_image1, base64_image2, logger, round_num):
     # Create httpx client
     http_client = httpx.Client(
         base_url="http://192.168.1.240:8080/v1",
-        timeout=600.0
+        timeout=180
     )
     
     client = OpenAI(
@@ -502,10 +513,10 @@ def convert_to_sd_prompt(comparison_text, last_sd_prompt, logger, round_num):
     logger.log(f"Converting comparison to SD prompt (Round {round_num})")
     
     # Create httpx client for SD server
-    sd_server_url = "http://192.168.1.158:8080/v1"
+    sd_server_url = "http://192.168.1.152:8080/v1"
     http_client = httpx.Client(
         base_url=sd_server_url,
-        timeout=600.0
+        timeout=180
     )
     
     client = OpenAI(
@@ -519,7 +530,8 @@ def convert_to_sd_prompt(comparison_text, last_sd_prompt, logger, round_num):
         result = '[gMASK]<sop>\n'
         result += f'<|system|>{system_content}'
         result += f'<|user|>{user_content}\n'
-        result += '<|assistant|></think>'
+        #result += '<|assistant|></think>'
+        result += '<|assistant|><think></think>'
         return result
     
     # Build user content with context first, then Gemma analysis
@@ -540,6 +552,12 @@ INSTRUCTIONS:
 - ONLY EVER INCREASE the length and level of detail - only remove / replace elements as described by gemma
 - Apply all the professional terminology and quantified parameters from your system rules
 - Ensure the new prompt addresses every specific change mentioned in the Gemma analysis
+
+CRITICAL: The SD prompt must be COMPLETELY STANDALONE and ABSOLUTE:
+- NO relative terms (increased/decreased/more/less/enhanced/improved)
+- NO references to previous prompts or iterations
+- ALL descriptions must be absolute and self-contained
+- SD will NOT see any previous context - describe everything from scratch
 
 GEMMA ANALYSIS TO PROCESS:
 {comparison_text}"""
@@ -606,6 +624,10 @@ def generate_image_with_comfyui(sd_prompt, logger, round_num):
         # Load and prepare the workflow
         prompt = load_workflow(sd_prompt)
         
+        # Store original workflow for metadata
+        with open("zitBasic.json", 'r', encoding='utf-8') as f:
+            original_workflow = json.load(f)
+        
         # Connect to ComfyUI
         ws = websocket.WebSocket()
         ws.connect("ws://{}/ws?clientId={}".format(COMFYUI_SERVER, CLIENT_ID))
@@ -625,15 +647,32 @@ def generate_image_with_comfyui(sd_prompt, logger, round_num):
                     logger.log(f"Error loading generated image: {img_error}", "ERROR")
         
         logger.log(f"Successfully generated {len(pil_images)} image(s)")
-        return pil_images
+        return pil_images, original_workflow
         
     except Exception as e:
         raise Exception(f"ComfyUI generation failed: {e}")
 
-def save_image(pil_image, output_path):
-    """Save PIL image to file"""
+def save_image(pil_image, output_path, workflow_data=None, sd_prompt=None):
+    """Save PIL image to file with workflow metadata"""
     try:
-        pil_image.save(output_path, 'PNG')
+        from PIL.PngImagePlugin import PngInfo
+        
+        # Create metadata
+        metadata = PngInfo()
+        
+        if workflow_data:
+            # Add the full workflow JSON
+            metadata.add_text("workflow", json.dumps(workflow_data))
+        
+        if sd_prompt:
+            # Add the SD prompt used
+            metadata.add_text("prompt", sd_prompt)
+            
+        # Add generation timestamp
+        metadata.add_text("generated_at", datetime.now().isoformat())
+        
+        # Save with metadata
+        pil_image.save(output_path, 'PNG', pnginfo=metadata)
         return True
     except Exception as e:
         raise Exception(f"Failed to save image to {output_path}: {e}")
@@ -720,20 +759,20 @@ def main():
                     last_sd_prompt = sd_prompt
                     
                     # Step 3: Generate image with ComfyUI
-                    generated_images = generate_image_with_comfyui(sd_prompt, logger, round_num)
+                    generated_images, workflow_data = generate_image_with_comfyui(sd_prompt, logger, round_num)
                     
                     if not generated_images:
                         logger.log(f"No images generated in round {round_num}", "ERROR")
                         continue
                     
-                    # Step 4: Save the first generated image
+                    # Step 4: Save the first generated image with metadata
                     output_dir = Path("output")
                     output_dir.mkdir(exist_ok=True)
                     output_filename = f"{image_file.stem}_sd_{round_num}.png"
                     output_path = output_dir / output_filename
                     
-                    save_image(generated_images[0], output_path)
-                    logger.log(f"Saved generated image: {output_path}")
+                    save_image(generated_images[0], output_path, workflow_data, sd_prompt)
+                    logger.log(f"Saved generated image with metadata: {output_path}")
                     
                     # Update current image for next round
                     current_image_path = str(output_path)
